@@ -1583,6 +1583,15 @@ static __always_inline void kfree_hook(void *x)
 static __always_inline bool slab_free_hook(struct kmem_cache *s,
 						void *x, bool init)
 {
+	/*
+	 * Postpone setting the inactive canary until the metadata
+	 * has potentially been cleared at the end of this function.
+	 */
+	bool is_kfence = is_kfence_address(x);
+	if (!is_kfence) {
+		check_canary(x, x, s->random_active);
+	}
+
 	kmemleak_free_recursive(x, s->flags);
 
 	/*
@@ -1626,6 +1635,11 @@ static __always_inline bool slab_free_hook(struct kmem_cache *s,
 		if (!IS_ENABLED(CONFIG_SLAB_SANITIZE_VERIFY) && s->ctor)
 			s->ctor(x);
 	}
+
+	if (!is_kfence) {
+		set_canary(s, x, s->random_inactive);
+	}
+
 	/* KASAN might put x into memory quarantine, delaying its reuse. */
 	return kasan_slab_free(s, x, init);
 }
@@ -1650,9 +1664,6 @@ static inline bool slab_free_freelist_hook(struct kmem_cache *s,
 	do {
 		object = next;
 		next = get_freepointer(s, object);
-
-		check_canary(s, object, s->random_active);
-		set_canary(s, object, s->random_inactive);
 
 		/* If object's reuse doesn't have to be delayed */
 		if (!slab_free_hook(s, object, slab_want_init_on_free(s))) {
